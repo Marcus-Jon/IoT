@@ -8,99 +8,105 @@ from picamera import PiCamera as pc
 from boto.s3.connection import S3Connection
 from boto.s3.key import Key
 
-
-def assign_certificates():
-	client = AWSIoTMQTTClient("client id")
-	client.configureEndpoint("endpoint", 8883)
-	client.configureCredentials("rootCA", "private key", "certificate")
-	client.configureOfflinePublishQueueing(-1)
-	return client
-
-def assign_shadow_certificates():
-	shadow_client = AWSIoTMQTTShadowClient("client id")
-	shadow_client.configureEndpoint(endpoint", 8883)
-	shadow_client.configureCredentials("rootCA", "private key", "certificate")
-	return shadow_client
-
-def send_image(client):
-	# Connect to MQTT broker to publish current status.
-	topic = "pi_image"
-	client.connect()
-
-	# upload file to the s3 bucket.
-	# get keys from file
-	key_file = open('key file', 'r')
-	keys = key_file.readlines()
-	access_key = keys[0]
-	secret_key = keys[1]
-	access_key = access_key.strip()
-	
-	# connect to S3 bucket.
-	connection = S3Connection(access_key, secret_key)
-	bucket = connection.get_bucket('s3 bucket')
-	key = Key(bucket)
-	key.key = ('test')
-	key.set_contents_from_filename('file name')
-	
-	# payload for notification.
-	payload = {}
-	payload = {"state":{"file": "uploaded"}}
-	payload = json.dumps(payload)
-
-	client.publish(topic, payload, 1)
-	client.disconnect()
-
-def take_image():
-	# take image with raspberry pi camera.
-	camera = pc()
-	camera.resolution = (1024, 768)
-	camera.start_preview()
-
-	sleep(2)
-	camera.capture('file name')
-
-	client = assign_certificates()
-	send_image(client)
-
-def update_shadow():
-	shadow_client = assign_shadow_certificates()
-
-	# update the device shadow.
-	payload = {}
-	payload = {"state": {"reported": {"take_photo":"idle"}}}
-	shadow_payload = json.dumps(payload)
-
-	shadow_client = shadow_client.getMQTTConnection()
-	shadow_client.configureOfflinePublishQueueing(-1)
-	shadow_client.connect()
-	shadow_client.publish("shadow update topic", shadow_payload, 1)
-	shadow_client.disconnect()
-
 def customCallback(client, userdata, message):
 	print message.topic
 	print message.payload
+
+	callback_state = message.payload[36:40]
+	pi = rasp_pi()
+	print 'state: ', callback_state
+	if callback_state == 'True':
+		global state
+		state = callback_state
+
+class rasp_pi:
+	def __init__(self):
+		pass
+
+	def assign_certificates(self):
+		client = AWSIoTMQTTClient("client id")
+		client.configureEndpoint("your endpoint", 8883)
+		client.configureCredentials("rootCA.pem", "private key", "certificate")
+		client.configureOfflinePublishQueueing(-1)
+		return client
+
+	def assign_shadow_certificates(self):
+		shadow_client = AWSIoTMQTTShadowClient("client id")
+		shadow_client.configureEndpoint("your endpoint", 8883)
+		shadow_client.configureCredentials("rootCA.pem", "private key", "certificate")
+		return shadow_client
+
+	def send_image(self, client):
+		# Connect to MQTT broker to publish current status.
+		topic = "topic name"
+		client.connect()
+
+		# upload file to the s3 bucket.
+		# get keys from file
+		key_file = open('keys.txt', 'r')
+		keys = key_file.readlines()
+		access_key = keys[0]
+		secret_key = keys[1]
+		access_key = access_key.strip()
 	
-	# check the state of the device shadow payload
-	state = message.payload[36:40]
-	if state == 'True':
-		take_image()
-		update_shadow()
+		# connect to S3 bucket.
+		connection = S3Connection(access_key, secret_key)
+		bucket = connection.get_bucket('bucket name')
+		key = Key(bucket)
+		key.key = ('key name')
+		key.set_contents_from_filename('filename')
+	
+		# payload for notification.
+		payload = {}
+		payload = {"state":{"file": "uploaded"}}
+		payload = json.dumps(payload)
 
-def check_update(shadow_client):
-	# establish connection to MQTT broker on AWS.
-	shadow_client = shadow_client.getMQTTConnection()
-	shadow_client.configureOfflinePublishQueueing(-1)
-	shadow_client.connect()
+		client.publish(topic, payload, 1)
+		client.disconnect()
 
-	# wait for update to the device shadow for the raspberry pi.
-	while True:
-		shadow_client.subscribe("shadow update accepted topic", 1, customCallback)
-	shadow_client.disconnect()
+	def take_image(self):
+		# take image with raspberry pi camera.
+		camera = pc()
+		camera.resolution = (1024, 768)
+		camera.start_preview()
+
+		sleep(2)
+		camera.capture('filename')
+
+		client = self.assign_certificates()
+		self.send_image(client)
+
+	def check_update(self, shadow_client):
+		running = True
+		global state
+		
+		payload = {}
+		payload = {"state": {"reported": {"take_photo":"idle"}}}
+		shadow_payload = json.dumps(payload)
+	
+		shadow_client = shadow_client.getMQTTConnection()
+		shadow_client.configureOfflinePublishQueueing(-1)
+		shadow_client.connect()
+		
+		while running == True:
+			shadow_client.publish("$aws/things/thing name/shadow/get", "", 1)
+			shadow_client.subscribe("$aws/things/thing name/shadow/get/accepted", 1, customCallback)
+			shadow_state = state
+			if shadow_state == "True":
+				shadow_client.publish("$aws/things/thing name/shadow/update", shadow_payload, 1)
+				print 'state has been changed to idle'
+				state = "idle"
+				self.take_image()
+				running = False
+
+		shadow_client.disconnect()
 
 def main():
-	shadow_client = assign_shadow_certificates()
-
-	check_update(shadow_client)
+	pi = rasp_pi()
+	global state
+	state = "idle"
+	shadow_client = pi.assign_shadow_certificates()
+	pi.check_update(shadow_client)
 
 if __name__ == '__main__':
 	main()
